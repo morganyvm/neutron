@@ -40,22 +40,18 @@ class MeteringAgentNotifyAPI(object):
         plugin = directory.get_plugin(plugin_constants.L3)
 
         l3_routers = {}
-        state = agentschedulers_db.get_admin_state_up_filter()
         for router in routers:
-            l3_agents = plugin.get_l3_agents_hosting_routers(
-                adminContext, [router['id']],
-                admin_state_up=state,
-                active=True)
-            for l3_agent in l3_agents:
+            hosts = plugin.get_hosts_to_notify(adminContext, router['id'])
+            for host in hosts:
                 LOG.debug('Notify metering agent at %(topic)s.%(host)s '
                           'the message %(method)s',
                           {'topic': self.topic,
-                           'host': l3_agent.host,
+                           'host': host,
                            'method': method})
 
-                l3_router = l3_routers.get(l3_agent.host, [])
+                l3_router = l3_routers.get(host, [])
                 l3_router.append(router)
-                l3_routers[l3_agent.host] = l3_router
+                l3_routers[host] = l3_router
 
         for host, routers in l3_routers.items():
             cctxt = self.client.prepare(server=host)

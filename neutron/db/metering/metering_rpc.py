@@ -47,9 +47,7 @@ class MeteringRpcCallbacks(object):
                 return
 
             router_ids = []
-            for agent in agents:
-                routers = l3_plugin.list_routers_on_l3_agent(context, agent.id)
-                router_ids += [router['id'] for router in routers['routers']]
+            router_ids = l3_plugin.list_router_ids_on_host(context, host)
             if not router_ids:
                 return
             else:

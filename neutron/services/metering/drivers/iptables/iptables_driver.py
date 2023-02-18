@@ -26,7 +26,6 @@ from neutron.agent.linux import iptables_manager
 from neutron.conf.agent import common as config
 from neutron.services.metering.drivers import abstract_driver
 
-
 LOG = logging.getLogger(__name__)
 NS_PREFIX = 'qrouter-'
 WRAP_NAME = 'neutron-meter'
@@ -117,6 +116,34 @@ class RouterWithMetering(object):
                 created = True
 
         return created
+    
+    #Add function to add snat with qrouter counters
+    def get_traffic_counters(self, label_id):
+        chain_acc = snat_chain_acc = None
+        acc = {'pkts': 0, 'bytes': 0}
+        chain = iptables_manager.get_chain_name(WRAP_NAME + LABEL + label_id,
+                                                        wrap=False)
+        try:
+            if self.iptables_manager:
+                chain_acc = self.iptables_manager.get_traffic_counters(
+                    chain, wrap=False, zero=True)
+            if self.snat_iptables_manager:
+                snat_chain_acc = (
+                    self.snat_iptables_manager.get_traffic_counters(
+                        chain, wrap=False, zero=True))
+        except RuntimeError:
+            LOG.exception(_LE('Failed to get traffic counters, router: %s'),
+                          self.id)
+            return None
+
+        if chain_acc:
+            acc['pkts'] += chain_acc['pkts']
+            acc['bytes'] += chain_acc['bytes']
+        if snat_chain_acc:
+            acc['pkts'] += snat_chain_acc['pkts']
+            acc['bytes'] += snat_chain_acc['bytes']
+        
+        return acc
 
 
 class IptablesMeteringDriver(abstract_driver.MeteringAbstractDriver):
@@ -191,6 +218,13 @@ class IptablesMeteringDriver(abstract_driver.MeteringAbstractDriver):
                    gw_port_id)[:self.driver.DEV_NAME_LEN]
         ext_snat_dev = (ROUTER_2_FIP_DEV_PREFIX +
                         rm.id)[:self.driver.DEV_NAME_LEN]
+        
+        #if distributed, then actually the expected interfaces are reversed (qg in qrouter ns)
+        if rm.router['distributed']:
+            temp = ext_snat_dev
+            ext_snat_dev = ext_dev
+            ext_dev = temp
+
         return ext_dev, ext_snat_dev
 
     def _process_metering_label_rules(self, rules, label_chain,
@@ -379,6 +413,13 @@ class IptablesMeteringDriver(abstract_driver.MeteringAbstractDriver):
             TOP_CHAIN, '-j ' + rules_chain, wrap=False)
         rm.iptables_manager.ipv4['filter'].add_rule(
             label_chain, '', wrap=False)
+        if rm.snat_iptables_manager:
+            rm.snat_iptables_manager.ipv4['filter'].add_chain(rules_chain, wrap=False)
+            rm.snat_iptables_manager.ipv4['filter'].add_chain(label_chain, wrap=False)
+            rm.snat_iptables_manager.ipv4['filter'].add_rule(
+                TOP_CHAIN, '-j ' + rules_chain, wrap=False)
+            rm.snat_iptables_manager.ipv4['filter'].add_rule(
+                label_chain, '', wrap=False)
 
     def _process_metering_rule_action_based_on_ns(self, router, action,
                                                   ext_dev, im):
@@ -485,6 +526,7 @@ class IptablesMeteringDriver(abstract_driver.MeteringAbstractDriver):
                                                        routers_to_reconfigure)
 
             if not chain_acc:
+                routers_to_reconfigure.add(router['id'])
                 continue
 
             acc = traffic_counters.get(label_id, {'pkts': 0, 'bytes': 0})
@@ -497,19 +539,9 @@ class IptablesMeteringDriver(abstract_driver.MeteringAbstractDriver):
     @staticmethod
     def retrieve_traffic_counters(label_id, rm, router,
                                   routers_to_reconfigure):
-        try:
-            chain = iptables_manager.get_chain_name(WRAP_NAME +
-                                                    LABEL +
-                                                    label_id,
-                                                    wrap=False)
+        
+        chain_acc = rm.get_traffic_counters(label_id)
 
-            chain_acc = rm.iptables_manager.get_traffic_counters(
-                chain, wrap=False, zero=True)
-        except RuntimeError:
-            LOG.exception('Failed to get traffic counters, '
-                          'router: %s', router)
-            routers_to_reconfigure.add(router['id'])
-            return {}
         return chain_acc
 
     def retrieve_and_account_granular_traffic_counters(self, router,
@@ -581,6 +613,7 @@ class IptablesMeteringDriver(abstract_driver.MeteringAbstractDriver):
                                                        routers_to_reconfigure)
 
             if not chain_acc:
+                routers_to_reconfigure.add(router['id'])
                 continue
 
             label_traffic_counters = traffic_counters.get(
